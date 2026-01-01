@@ -8,42 +8,48 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-# Load YOLO model once
-model = YOLO("model/best.pt")
+# Load model once (important)
+MODEL_PATH = "model/best.pt"
+model = YOLO(MODEL_PATH)
 
-@app.route("/")
+@app.route("/", methods=["GET"])
 def home():
-    return "YOLO Plastic vs Metal API is running"
+    return "YOLO Plastic vs Metal API is running", 200
 
-@app.route("/predict", methods=["POST"])
-def predict():
+
+@app.route("/api/upload", methods=["POST"])
+def upload_image():
     if "image" not in request.files:
-        return jsonify({"error": "image missing"}), 400
+        return jsonify({"error": "No image file provided"}), 400
+
+    file = request.files["image"]
 
     try:
-        img_bytes = request.files["image"].read()
-        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        image = Image.open(io.BytesIO(file.read())).convert("RGB")
     except Exception:
-        return jsonify({"error": "invalid image"}), 400
+        return jsonify({"error": "Invalid image"}), 400
 
-    result = model.predict(img, imgsz=224, verbose=False)[0]
-    probs = result.probs.data.tolist()
+    results = model(image)[0]
 
-    plastic_prob = probs[model.names.index("plastic")]
-    metal_prob   = probs[model.names.index("metal")]
+    # YOLO classification output
+    probs = results.probs
+    class_names = results.names
 
-    if plastic_prob >= metal_prob:
-        final_class = "plastic"
-        confidence = plastic_prob
-    else:
-        final_class = "metal"
-        confidence = metal_prob
+    # Get highest probability
+    best_index = probs.top1
+    label = class_names[best_index]
+    confidence = float(probs.top1conf)
+
+    # Enforce ONLY plastic or metal
+    if label not in ["plastic", "metal"]:
+        label = "plastic" if label.lower().startswith("plast") else "metal"
 
     return jsonify({
-        "result": final_class,
+        "label": label,
         "confidence": round(confidence, 4)
     })
 
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
