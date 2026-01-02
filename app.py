@@ -11,23 +11,14 @@ CORS(app)
 # Load YOLO model once
 model = YOLO("model/best.pt")
 
-# -----------------------------
-# Health check
-# -----------------------------
 @app.route("/", methods=["GET"])
 def home():
     return "YOLO Plastic vs Metal API is running", 200
 
-# -----------------------------
-# DEBUG (deployment verification)
-# -----------------------------
 @app.route("/debug", methods=["GET"])
 def debug():
     return "DEBUG ROUTE ACTIVE", 200
 
-# -----------------------------
-# FRONTEND ENDPOINT
-# -----------------------------
 @app.route("/api/upload", methods=["POST"])
 def upload():
     if "image" not in request.files:
@@ -43,7 +34,7 @@ def upload():
     probs = result.probs.data.tolist()
 
     plastic_prob = probs[model.names.index("plastic")]
-    metal_prob   = probs[model.names.index("metal")]
+    metal_prob = probs[model.names.index("metal")]
 
     if plastic_prob >= metal_prob:
         final_class = "plastic"
@@ -57,9 +48,6 @@ def upload():
         "confidence": round(confidence, 4)
     })
 
-# -----------------------------
-# Run server (Render compatible)
-# -----------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
