@@ -8,11 +8,8 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-# -----------------------------
-# Load YOLO model ONCE
-# -----------------------------
-MODEL_PATH = "model/best.pt"
-model = YOLO(MODEL_PATH)
+# Load YOLO model once
+model = YOLO("model/best.pt")
 
 # -----------------------------
 # Health check
@@ -22,51 +19,46 @@ def home():
     return "YOLO Plastic vs Metal API is running", 200
 
 # -----------------------------
-# DEBUG route (deployment check)
+# DEBUG (deployment verification)
 # -----------------------------
 @app.route("/debug", methods=["GET"])
 def debug():
     return "DEBUG ROUTE ACTIVE", 200
 
 # -----------------------------
-# API Upload route (FRONTEND USES THIS)
+# FRONTEND ENDPOINT
 # -----------------------------
 @app.route("/api/upload", methods=["POST"])
-def upload_image():
+def upload():
     if "image" not in request.files:
-        return jsonify({"error": "No image file provided"}), 400
-
-    file = request.files["image"]
-
-    if file.filename == "":
-        return jsonify({"error": "Empty filename"}), 400
+        return jsonify({"error": "image missing"}), 400
 
     try:
-        image = Image.open(io.BytesIO(file.read())).convert("RGB")
+        img_bytes = request.files["image"].read()
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     except Exception:
-        return jsonify({"error": "Invalid image"}), 400
+        return jsonify({"error": "invalid image"}), 400
 
-    # YOLO inference
-    results = model(image)[0]
+    result = model.predict(img, imgsz=224, verbose=False)[0]
+    probs = result.probs.data.tolist()
 
-    probs = results.probs
-    class_names = results.names
+    plastic_prob = probs[model.names.index("plastic")]
+    metal_prob   = probs[model.names.index("metal")]
 
-    best_index = probs.top1
-    label = class_names[best_index]
-    confidence = float(probs.top1conf)
-
-    # Enforce only plastic / metal
-    if label not in ["plastic", "metal"]:
-        label = "plastic" if label.lower().startswith("plast") else "metal"
+    if plastic_prob >= metal_prob:
+        final_class = "plastic"
+        confidence = plastic_prob
+    else:
+        final_class = "metal"
+        confidence = metal_prob
 
     return jsonify({
-        "label": label,
+        "label": final_class,
         "confidence": round(confidence, 4)
     })
 
 # -----------------------------
-# Run server
+# Run server (Render compatible)
 # -----------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
