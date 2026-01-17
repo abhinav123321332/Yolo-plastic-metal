@@ -5,38 +5,36 @@ from PIL import Image
 import io
 import base64
 import os
+import torch
 
-# --------------------------------------------------
-# App setup
-# --------------------------------------------------
 app = Flask(__name__)
 CORS(app)
 
-app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024  # 5MB max upload
+app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024  # 5MB
 
-# --------------------------------------------------
-# Load YOLO model ONCE at startup
-# --------------------------------------------------
+# -------------------------------
+# Load classification model
+# -------------------------------
 MODEL_PATH = "model/best.pt"
 model = YOLO(MODEL_PATH)
 
 print("Model task:", model.task)
 print("Model classes:", model.names)
 
-# Hard safety check
-if model.task != "classify":
-    raise RuntimeError("ERROR: This server expects a CLASSIFICATION model, not detection.")
+# Must be exactly these two
+METAL_LABEL = "metal"
+PLASTIC_LABEL = "plastic"
 
-# --------------------------------------------------
+# -------------------------------
 # Health check
-# --------------------------------------------------
+# -------------------------------
 @app.route("/", methods=["GET"])
 def home():
-    return "YOLO Plastic vs Metal API (Classification Mode)", 200
+    return "YOLO Plastic vs Metal Classifier API", 200
 
-# --------------------------------------------------
-# Image loader (file or base64)
-# --------------------------------------------------
+# -------------------------------
+# Image loader
+# -------------------------------
 def load_image(req):
     try:
         if "image" in req.files:
@@ -53,9 +51,9 @@ def load_image(req):
 
     return None
 
-# --------------------------------------------------
-# Main inference endpoint
-# --------------------------------------------------
+# -------------------------------
+# Classification endpoint
+# -------------------------------
 @app.route("/api/upload", methods=["POST"])
 def upload():
     img = load_image(request)
@@ -63,50 +61,47 @@ def upload():
     if img is None:
         return jsonify({
             "label": "plastic",
-            "confidence": 0.5,
-            "reason": "invalid image"
-        })
+            "confidence": 0.50,
+            "reason": "invalid or missing image"
+        }), 200
 
-    # --------------------------------------------------
-    # YOLO inference (CLASSIFICATION MODE)
-    # --------------------------------------------------
     try:
         result = model.predict(img, verbose=False)[0]
-    except Exception:
+    except Exception as e:
         return jsonify({
             "label": "plastic",
-            "confidence": 0.5,
-            "reason": "model inference failure"
-        })
+            "confidence": 0.50,
+            "reason": f"model inference failure: {str(e)}"
+        }), 200
 
+    # -------------------------------
+    # Proper classification handling
+    # -------------------------------
     probs = result.probs
 
     if probs is None:
         return jsonify({
             "label": "plastic",
-            "confidence": 0.5,
+            "confidence": 0.50,
             "reason": "no probabilities returned"
-        })
+        }), 200
 
-    names = model.names
+    prob_tensor = probs.data  # torch tensor [metal, plastic]
 
-    # Get correct index of each class
-    try:
-        metal_idx = list(names.values()).index("metal")
-        plastic_idx = list(names.values()).index("plastic")
-    except ValueError:
+    # Safety check
+    if len(prob_tensor) != 2:
         return jsonify({
             "label": "plastic",
-            "confidence": 0.5,
-            "reason": "class names mismatch in model"
-        })
+            "confidence": 0.50,
+            "reason": "model is not binary classifier"
+        }), 200
 
-    metal_prob = float(probs[metal_idx])
-    plastic_prob = float(probs[plastic_idx])
+    metal_prob = float(prob_tensor[0].item())
+    plastic_prob = float(prob_tensor[1].item())
 
-    # --------------------------------------------------
-    # PURE DECISION LOGIC (NO BIAS)
-    # --------------------------------------------------
+    # -------------------------------
+    # Final decision (forced binary)
+    # -------------------------------
     if metal_prob > plastic_prob:
         label = "metal"
         confidence = metal_prob
@@ -114,19 +109,16 @@ def upload():
         label = "plastic"
         confidence = plastic_prob
 
-    # --------------------------------------------------
-    # Final response
-    # --------------------------------------------------
     return jsonify({
         "label": label,
         "confidence": round(confidence, 4),
         "metal_prob": round(metal_prob, 4),
         "plastic_prob": round(plastic_prob, 4)
-    })
+    }), 200
 
-# --------------------------------------------------
+# -------------------------------
 # Run server
-# --------------------------------------------------
+# -------------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port = 5000
     app.run(host="0.0.0.0", port=port)
