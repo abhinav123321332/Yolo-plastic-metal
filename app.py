@@ -12,49 +12,27 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024  # 5MB
+app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024  # 5MB max upload
 
 # --------------------------------------------------
-# Load YOLO model ONCE
+# Load YOLO model ONCE at startup
 # --------------------------------------------------
 MODEL_PATH = "model/best.pt"
 model = YOLO(MODEL_PATH)
 
-# --------------------------------------------------
-# Sanity check (important)
-# --------------------------------------------------
-# Uncomment once to verify:
-# print("Model task:", model.task)
-# print("Model classes:", model.names)
+print("Model task:", model.task)
+print("Model classes:", model.names)
 
-# --------------------------------------------------
-# Class alias mapping (VERY IMPORTANT)
-# --------------------------------------------------
-METAL_ALIASES = {
-    "metal",
-    "aluminium",
-    "aluminum",
-    "can",
-    "tin",
-    "metal_can",
-    "crushed_metal",
-    "alu"
-}
-
-PLASTIC_ALIASES = {
-    "plastic",
-    "plastic_bottle",
-    "wrapper",
-    "polybag"
-}
+# Hard safety check
+if model.task != "classify":
+    raise RuntimeError("ERROR: This server expects a CLASSIFICATION model, not detection.")
 
 # --------------------------------------------------
 # Health check
 # --------------------------------------------------
 @app.route("/", methods=["GET"])
 def home():
-    return "YOLO Plastic vs Metal API (Detection-based, hardened)", 200
-
+    return "YOLO Plastic vs Metal API (Classification Mode)", 200
 
 # --------------------------------------------------
 # Image loader (file or base64)
@@ -70,12 +48,10 @@ def load_image(req):
             return Image.open(
                 io.BytesIO(base64.b64decode(req.json["image"]))
             ).convert("RGB")
-
     except Exception:
         return None
 
     return None
-
 
 # --------------------------------------------------
 # Main inference endpoint
@@ -88,20 +64,14 @@ def upload():
         return jsonify({
             "label": "plastic",
             "confidence": 0.5,
-            "reason": "invalid or missing image"
+            "reason": "invalid image"
         })
 
     # --------------------------------------------------
-    # YOLO inference (DETECTION MODE)
+    # YOLO inference (CLASSIFICATION MODE)
     # --------------------------------------------------
     try:
-        result = model.predict(
-            img,
-            imgsz=416,       # higher resolution helps crushed objects
-            conf=0.15,       # allow weak detections
-            iou=0.45,
-            verbose=False
-        )[0]
+        result = model.predict(img, verbose=False)[0]
     except Exception:
         return jsonify({
             "label": "plastic",
@@ -109,86 +79,54 @@ def upload():
             "reason": "model inference failure"
         })
 
-    boxes = result.boxes
+    probs = result.probs
 
-    # --------------------------------------------------
-    # No detections → uncertainty handling
-    # --------------------------------------------------
-    if boxes is None or len(boxes) == 0:
+    if probs is None:
         return jsonify({
-            "label": "metal",
-            "confidence": 0.55,
-            "reason": "no detections; metal-biased uncertainty fallback"
+            "label": "plastic",
+            "confidence": 0.5,
+            "reason": "no probabilities returned"
         })
 
-    # --------------------------------------------------
-    # Aggregate confidence by material
-    # --------------------------------------------------
-    names = {k: v.lower() for k, v in result.names.items()}
+    names = model.names
 
-    scores = {
-        "metal": 0.0,
-        "plastic": 0.0
-    }
-
-    detections_detail = []
-
-    for box in boxes:
-        cls_id = int(box.cls[0])
-        conf = float(box.conf[0])
-        cls_name = names.get(cls_id, "unknown")
-
-        detections_detail.append({
-            "class": cls_name,
-            "confidence": round(conf, 4)
+    # Get correct index of each class
+    try:
+        metal_idx = list(names.values()).index("metal")
+        plastic_idx = list(names.values()).index("plastic")
+    except ValueError:
+        return jsonify({
+            "label": "plastic",
+            "confidence": 0.5,
+            "reason": "class names mismatch in model"
         })
 
-        if cls_name in METAL_ALIASES:
-            scores["metal"] += conf
-        elif cls_name in PLASTIC_ALIASES:
-            scores["plastic"] += conf
-        # unknown classes are ignored intentionally
-
-    metal_score = scores["metal"]
-    plastic_score = scores["plastic"]
-    total_score = metal_score + plastic_score + 1e-6
+    metal_prob = float(probs[metal_idx])
+    plastic_prob = float(probs[plastic_idx])
 
     # --------------------------------------------------
-    # Decision logic (explicit & honest)
+    # PURE DECISION LOGIC (NO BIAS)
     # --------------------------------------------------
-    if metal_score > plastic_score:
+    if metal_prob > plastic_prob:
         label = "metal"
-        confidence = metal_score / total_score
-        reason = "metal detections dominate"
-
-    elif plastic_score > metal_score:
-        label = "plastic"
-        confidence = plastic_score / total_score
-        reason = "plastic detections dominate"
-
+        confidence = metal_prob
     else:
-        # tie or extremely weak evidence
-        label = "metal"
-        confidence = 0.55
-        reason = "tie / low evidence; metal-biased resolution"
+        label = "plastic"
+        confidence = plastic_prob
 
     # --------------------------------------------------
-    # Final response (transparent)
+    # Final response
     # --------------------------------------------------
     return jsonify({
         "label": label,
         "confidence": round(confidence, 4),
-        "metal_score": round(metal_score, 4),
-        "plastic_score": round(plastic_score, 4),
-        "detections": len(boxes),
-        "details": detections_detail,
-        "reason": reason
+        "metal_prob": round(metal_prob, 4),
+        "plastic_prob": round(plastic_prob, 4)
     })
-
 
 # --------------------------------------------------
 # Run server
 # --------------------------------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
