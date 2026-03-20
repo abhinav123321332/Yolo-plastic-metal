@@ -1,19 +1,5 @@
-# Virtual environments
-yoloenv/
-venv/
-.env/
-
-# Datasets & training outputs
-dataset/
-runs/
-*.pt
-*.jpg
-*.png
-
-# Python cache
-__pycache__/
-*.pyc
-
-# OS files
-Thumbs.db
-.DS_Store
+FETCH_HEAD
+git
+main
+*.txt
+uploads/
